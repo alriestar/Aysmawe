@@ -8,12 +8,14 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.pm.Signature
 import android.os.Build
 import android.provider.Settings
 import android.provider.Telephony
 import android.view.accessibility.AccessibilityManager
 import android.view.inputmethod.InputMethodManager
 import java.io.File
+import java.security.MessageDigest
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 
@@ -24,6 +26,7 @@ class Scanner(private val context: Context) {
     /** Jalankan di background thread; bisa memakan waktu beberapa detik. */
     fun scan(includeSystem: Boolean, onProgress: (done: Int, total: Int) -> Unit): ScanResult {
         val state = collectSystemState()
+        val ioc = runCatching { IocDatabase.load(context) }.getOrNull()
         val names = installedPackageNames()
         val reports = ArrayList<AppReport>()
 
@@ -33,9 +36,12 @@ class Scanner(private val context: Context) {
             val info = packageInfo(name) ?: return@forEachIndexed
             val appInfo = info.applicationInfo ?: return@forEachIndexed
             val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-            if (isSystem && !includeSystem) return@forEachIndexed
+            // Stalkerware yang dikenal tetap dilaporkan walaupun aplikasi sistem disembunyikan.
+            val match = ioc?.match(name, certSha1s(info))
+            if (isSystem && !includeSystem && match == null) return@forEachIndexed
 
             val installer = installerOf(name)
+            val iocFindings = if (match != null && ioc != null) ioc.findings(match) else emptyList()
             reports += AppReport(
                 packageName = name,
                 label = appInfo.loadLabel(pm).toString(),
@@ -43,13 +49,14 @@ class Scanner(private val context: Context) {
                 isSystem = isSystem,
                 installer = installer,
                 apkPath = appInfo.sourceDir,
-                findings = Heuristics.evaluate(info, isSystem, installer, state),
+                findings = iocFindings + Heuristics.evaluate(info, isSystem, installer, state),
+                knownThreat = match?.entry,
             )
         }
 
         return ScanResult(
             apps = reports.sortedWith(compareByDescending<AppReport> { it.score }.thenBy { it.label.lowercase() }),
-            deviceChecks = deviceChecks(),
+            deviceChecks = deviceChecks(ioc),
             scannedCount = reports.size,
         )
     }
@@ -120,13 +127,33 @@ class Scanner(private val context: Context) {
     // Diambil per paket (bukan sekaligus) supaya tidak kena batas ukuran Binder.
     @Suppress("DEPRECATION")
     private fun packageInfo(name: String): PackageInfo? = runCatching {
-        val flags = PackageManager.GET_PERMISSIONS or PackageManager.GET_SERVICES or PackageManager.GET_RECEIVERS
+        val signing = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+        val flags = PackageManager.GET_PERMISSIONS or PackageManager.GET_SERVICES or
+            PackageManager.GET_RECEIVERS or signing
         if (Build.VERSION.SDK_INT >= 33) {
             pm.getPackageInfo(name, PackageManager.PackageInfoFlags.of(flags.toLong()))
         } else {
             pm.getPackageInfo(name, flags)
         }
     }.getOrNull()
+
+    /** SHA-1 (hex huruf besar) dari sertifikat penandatangan, termasuk riwayat rotasi kunci. */
+    @Suppress("DEPRECATION")
+    private fun certSha1s(info: PackageInfo): List<String> {
+        val signatures: Array<out Signature> = if (Build.VERSION.SDK_INT >= 28) {
+            val si = info.signingInfo
+            when {
+                si == null -> emptyArray<Signature>()
+                si.hasMultipleSigners() -> si.apkContentsSigners.orEmpty()
+                else -> si.signingCertificateHistory.orEmpty()
+            }
+        } else {
+            info.signatures.orEmpty()
+        }
+        return signatures.map { sig ->
+            MessageDigest.getInstance("SHA-1").digest(sig.toByteArray()).joinToString("") { "%02X".format(it) }
+        }
+    }
 
     @Suppress("DEPRECATION")
     private fun launcherPackages(): Set<String> {
@@ -148,9 +175,19 @@ class Scanner(private val context: Context) {
         }
     }.getOrNull()
 
-    private fun deviceChecks(): List<DeviceCheck> {
+    private fun deviceChecks(ioc: IocDatabase?): List<DeviceCheck> {
         val cr = context.contentResolver
         val checks = mutableListOf<DeviceCheck>()
+
+        checks += if (ioc != null) {
+            DeviceCheck(
+                "Database stalkerware: ${ioc.familyCount} keluarga (data ${ioc.updated})",
+                "Sumber: AssoEchap/stalkerware-indicators (CC-BY 4.0). Daftar ini tidak lengkap; " +
+                    "tidak cocok bukan jaminan bersih.", false
+            )
+        } else {
+            DeviceCheck("Database stalkerware gagal dimuat", "Hanya pemeriksaan heuristik yang berjalan.", true)
+        }
 
         val suPaths = listOf(
             "/system/bin/su", "/system/xbin/su", "/sbin/su", "/system/sbin/su",

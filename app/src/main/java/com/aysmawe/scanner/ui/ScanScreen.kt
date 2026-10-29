@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
@@ -98,6 +99,10 @@ fun ScanScreen(vm: ScanViewModel = viewModel()) {
             val result = state.result
             if (result != null) {
                 item { Summary(result) }
+                val threats = result.apps.filter { it.knownThreat?.isStalkerware == true }
+                if (threats.isNotEmpty()) {
+                    item { StalkerwareAlert(threats) }
+                }
                 item { SectionTitle("Pemeriksaan perangkat") }
                 items(result.deviceChecks) { DeviceCheckRow(it) }
                 item {
@@ -141,7 +146,8 @@ private fun ScanControls(state: UiState, onIncludeSystem: (Boolean) -> Unit, onS
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
                 "Memeriksa aplikasi terpasang untuk tanda-tanda keylogger, spyware, dan trojan " +
-                    "(akses aksesibilitas, keyboard, admin perangkat, izin berbahaya, sumber instalasi).",
+                    "(akses aksesibilitas, keyboard, admin perangkat, izin berbahaya, sumber instalasi), " +
+                    "serta mencocokkannya dengan database stalkerware publik.",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Text(
@@ -183,6 +189,43 @@ private fun Summary(result: ScanResult) {
             OutlinedButton(onClick = { context.safeStart(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) {
                 Text("Buka pengaturan Aksesibilitas")
             }
+        }
+    }
+}
+
+@Composable
+private fun StalkerwareAlert(threats: List<AppReport>) {
+    val context = LocalContext.current
+    val names = threats.joinToString { "${it.label} (${it.knownThreat?.name})" }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        ),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Stalkerware terdeteksi", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(names, fontWeight = FontWeight.SemiBold)
+            Text("Sebelum menghapus, baca dulu:", fontWeight = FontWeight.SemiBold)
+            listOf(
+                "Menghapus stalkerware bisa diketahui oleh orang yang memasangnya. Jika pelakunya orang " +
+                    "dekat dan kamu khawatir akan keselamatanmu, susun rencana aman dan hubungi lembaga " +
+                    "pendamping lebih dulu.",
+                "Simpan bukti: screenshot hasil scan ini dan halaman info aplikasinya.",
+                "Dari perangkat lain yang bersih, ganti password akun penting (Google, email, WhatsApp, " +
+                    "bank), aktifkan 2FA, dan keluarkan perangkat asing dari akun Google-mu.",
+                "Nonaktifkan Device Admin dan Aksesibilitas aplikasi tersebut, lalu uninstall. Jika tidak " +
+                    "bisa, coba dari Safe Mode, atau backup data lalu factory reset.",
+                "Ganti PIN/pola kunci layar dengan yang tidak diketahui orang lain.",
+            ).forEachIndexed { i, step ->
+                Text("${i + 1}. $step", style = MaterialTheme.typography.bodySmall)
+            }
+            OutlinedButton(onClick = {
+                context.safeStart(
+                    Intent(Intent.ACTION_VIEW, Uri.parse("https://stopstalkerware.org/information-for-survivors/"))
+                )
+            }) { Text("Panduan untuk korban") }
         }
     }
 }

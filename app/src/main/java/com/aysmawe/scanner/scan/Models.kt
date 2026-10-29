@@ -27,6 +27,7 @@ data class AppReport(
     val installer: String?,
     val apkPath: String,
     val findings: List<Finding>,
+    val knownThreat: IocDatabase.Entry? = null,
 ) {
     val score: Int = findings.sumOf { it.points }
     val level: RiskLevel = RiskLevel.fromScore(score)
